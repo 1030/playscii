@@ -4,6 +4,24 @@
 
 **If you came here looking for instructions for installing playscii on MacOS, see https://github.com/michael-lazar/playscii/issues/3#issuecomment-1146280788**
 
+## Modern macOS Apple Silicon build
+
+This fork includes a native arm64 build for current macOS releases. The app
+uses Python 3.12, current Pillow/NumPy/PyOpenGL/PySDL2 releases, and bundles
+the SDL2 compatibility, SDL2_mixer, and SDL3 libraries it needs. It also adds
+native trackpad two-finger panning and pinch-to-zoom support.
+
+Download the ready-to-run DMG from this repository's GitHub Releases page, or
+build it locally:
+
+```sh
+brew install python@3.12 sdl2_mixer sdl3
+PYTHON="$(brew --prefix python@3.12)/bin/python3.12" ./build_mac.sh
+```
+
+The build script creates `dist/Playscii.app` and a compressed arm64 DMG. The
+app is ad-hoc signed for local use; it is not Apple-notarized.
+
 # PLAYSCII - an ASCII art and game creation tool
 
 Playscii (pronounced play-skee) is an art, animation, and game creation tool.

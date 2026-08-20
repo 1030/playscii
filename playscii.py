@@ -17,7 +17,9 @@ if platform.system() == 'Windows' or platform.system() == 'Darwin':
 
 # fix the working directory when running in a mac app
 if platform.system() == 'Darwin' and hasattr(sys, 'frozen'):
-    os.chdir(os.path.abspath(os.path.dirname(sys.executable)))
+    # PyInstaller places bundled data under Contents/Resources and exposes it
+    # through sys._MEIPASS (Contents/Frameworks in current app bundles).
+    os.chdir(sys._MEIPASS)
 
 # app imports
 import ctypes, time, hashlib, importlib, traceback
@@ -420,7 +422,7 @@ class Application:
         # TODO: this doesn't seem to work in Ubuntu, what am i missing?
         img = Image.open(LOGO_FILENAME).convert('RGBA')
         # does icon need to be a specific size?
-        img = img.resize((32, 32), Image.ANTIALIAS)
+        img = img.resize((32, 32), Image.Resampling.LANCZOS)
         w, h = img.size
         depth, pitch = 32, w * 4
         #SDL_CreateRGBSurfaceFrom((pixels, width, height, depth, pitch, Rmask, Gmask, Bmask, Amask)

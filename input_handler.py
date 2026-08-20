@@ -1,4 +1,4 @@
-import ctypes, os, platform
+import ctypes, math, os, platform, sys
 import sdl2
 
 from sys import exit
@@ -17,16 +17,99 @@ from key_shifts import NUMLOCK_ON_MAP, NUMLOCK_OFF_MAP
 BINDS_FILENAME = 'binds.cfg'
 BINDS_TEMPLATE_FILENAME = 'binds.cfg.default'
 
+# SDL3 events that sdl2-compat does not expose through PySDL2. Pinch updates
+# are observed directly from SDL3's queue before the compatibility layer drops
+# them while translating events back to the SDL2 ABI.
+SDL3_EVENT_PINCH_UPDATE = 0x711
+
+
+class SDL3PinchFingerEvent(ctypes.Structure):
+    _fields_ = [
+        ('type', ctypes.c_uint32),
+        ('reserved', ctypes.c_uint32),
+        ('timestamp', ctypes.c_uint64),
+        ('scale', ctypes.c_float),
+        ('windowID', ctypes.c_uint32),
+        ('span_x', ctypes.c_float),
+        ('span_y', ctypes.c_float),
+        ('focus_x', ctypes.c_float),
+        ('focus_y', ctypes.c_float),
+    ]
+
+
+SDL3EventWatch = ctypes.CFUNCTYPE(
+    ctypes.c_bool, ctypes.c_void_p, ctypes.POINTER(SDL3PinchFingerEvent))
+
 
 class InputLord:
     
     "sets up key binds and handles input"
     wheel_zoom_amount = 3.0
     keyboard_zoom_amount = 1.0
+    trackpad_pan_amount = 25.0
+    trackpad_pinch_zoom_amount = 200.0
+
+    def pan_from_trackpad(self, wheel):
+        """Pan the canvas using a macOS two-finger scroll event."""
+        # preciseX/Y retain the fractional deltas produced by a trackpad.
+        # Older SDL versions leave them at zero, so keep the integer fallback.
+        dx = wheel.preciseX if wheel.preciseX else wheel.x
+        dy = wheel.preciseY if wheel.preciseY else wheel.y
+        self.app.camera.mouse_pan(-dx * self.trackpad_pan_amount,
+                                  dy * self.trackpad_pan_amount)
+
+    def zoom_from_trackpad_pinch(self, distance):
+        """Zoom towards the pointer from an SDL multi-touch pinch delta."""
+        if distance == 0:
+            return
+        camera = self.app.camera
+        # Additive camera-Z changes feel increasingly aggressive when Z is
+        # already small. Ease pinch input down progressively below 1:1 zoom,
+        # with a floor so movement never becomes imperceptible.
+        sensitivity = 1.0
+        if self.ui.active_art:
+            relative_z = camera.z / camera.get_base_zoom()
+            sensitivity = max(0.2, min(1.0, math.sqrt(relative_z)))
+        camera.zoom(-distance * self.trackpad_pinch_zoom_amount * sensitivity,
+                    towards_cursor=distance > 0)
+
+    def install_sdl3_pinch_watch(self):
+        """Observe native SDL3 pinch events hidden by sdl2-compat."""
+        self.pending_pinch_distance = 0.0
+        self.sdl3 = None
+        self.sdl3_event_watch = None
+        candidates = [
+            os.path.join(getattr(sys, '_MEIPASS', ''), 'libSDL3.dylib'),
+            '/opt/homebrew/lib/libSDL3.dylib',
+            '/usr/local/lib/libSDL3.dylib',
+        ]
+        for path in candidates:
+            if not path or not os.path.exists(path):
+                continue
+            try:
+                self.sdl3 = ctypes.CDLL(path)
+                break
+            except OSError:
+                pass
+        if not self.sdl3:
+            self.app.log('SDL3 pinch gesture support unavailable.')
+            return
+
+        def watch_event(_userdata, event):
+            if event.contents.type == SDL3_EVENT_PINCH_UPDATE:
+                self.pending_pinch_distance += event.contents.scale - 1.0
+            return True
+
+        self.sdl3_event_watch = SDL3EventWatch(watch_event)
+        self.sdl3.SDL_AddEventWatch.argtypes = [SDL3EventWatch, ctypes.c_void_p]
+        self.sdl3.SDL_AddEventWatch.restype = ctypes.c_bool
+        if not self.sdl3.SDL_AddEventWatch(self.sdl3_event_watch, None):
+            self.app.log('Failed to enable SDL3 pinch gesture support.')
     
     def __init__(self, app):
         self.app = app
         self.ui = self.app.ui
+        self.install_sdl3_pinch_watch()
         # read from binds.cfg file or create it from template
         # exec results in edit_binds, a dict whose keys are keys+mods
         # and whose values are bound functions
@@ -286,14 +369,22 @@ class InputLord:
                 ui_wheeled = self.ui.wheel_moved(event.wheel.y)
                 if not ui_wheeled:
                     if self.app.can_edit:
-                        if event.wheel.y > 0:
-                            # only zoom in should track towards cursor
+                        if platform.system() == 'Darwin' and not self.ctrl_pressed:
+                            # macOS reports two-finger trackpad drags as precise
+                            # wheel events. Move the canvas in both axes.
+                            self.pan_from_trackpad(event.wheel)
+                        elif event.wheel.y > 0:
+                            # Ctrl-scroll is also emitted for pinch gestures by
+                            # some macOS/SDL combinations.
                             app.camera.zoom(-self.wheel_zoom_amount,
                                             towards_cursor=True)
                         elif event.wheel.y < 0:
                             app.camera.zoom(self.wheel_zoom_amount)
                     else:
                         self.app.gw.mouse_wheeled(event.wheel.y)
+            elif event.type == sdl2.SDL_MULTIGESTURE:
+                if self.app.can_edit and not self.ui.active_dialog:
+                    self.zoom_from_trackpad_pinch(event.mgesture.dDist)
             elif event.type == sdl2.SDL_MOUSEBUTTONUP:
                 # "consume" input if UI handled it
                 ui_unclicked = self.ui.unclicked(event.button.button)
@@ -341,6 +432,11 @@ class InputLord:
                 elif event.button.button == sdl2.SDL_BUTTON_RIGHT:
                     if self.app.ui.active_art:
                         self.ui.quick_grab()
+        # sdl2-compat consumes SDL3 pinch events without translating them to
+        # SDL_MULTIGESTURE, so apply scale deltas captured by our event watch.
+        if self.pending_pinch_distance and self.app.can_edit and not self.ui.active_dialog:
+            self.zoom_from_trackpad_pinch(self.pending_pinch_distance)
+            self.pending_pinch_distance = 0.0
         # none of the below applies to cases where a dialog is up
         if self.ui.active_dialog:
             sdl2.SDL_PumpEvents()
