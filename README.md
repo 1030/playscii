@@ -1,3 +1,11 @@
+# Download Playscii for macOS
+
+## [Download the Apple Silicon DMG](https://github.com/1030/playscii/releases/download/macos-arm64-9.16.3/Playscii-9.16.3-macOS-arm64.dmg)
+
+Native arm64 build for modern Macs. See the [release notes](https://github.com/1030/playscii/releases/tag/macos-arm64-9.16.3) for details.
+
+---
+
 # NOTE!!!
 
 **This repo is a fork intended for my own personal use, and is not kept up-to-date with the official project from JP LeBrenton.**
